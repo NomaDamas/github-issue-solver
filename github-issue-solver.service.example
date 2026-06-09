@@ -1,0 +1,18 @@
+[Unit]
+Description=GitHub Issue Solver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Replace with the absolute path where you cloned the repository.
+WorkingDirectory=/path/to/github-issue-solver
+ExecStart=/path/to/github-issue-solver/run.sh
+Restart=always
+RestartSec=5
+Environment=PORT=8787
+# Optional: bootstrap the first admin account on a fresh database.
+# Environment=GIS_INITIAL_USERNAME=admin
+# Environment=GIS_INITIAL_PASSWORD=change-me-now
+
+[Install]
+WantedBy=default.target

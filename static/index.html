@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>GitHub Issue Solver</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <h1>Issue Solver</h1>
+        <p>GitHub 이슈 감시 · 에이전트 해결 · 검증 · 머지</p>
+      </div>
+      <div class="top-actions">
+        <button id="topSyncBtn" class="sync hidden">↻ 동기화</button>
+        <button id="logoutBtn" class="ghost hidden">로그아웃</button>
+      </div>
+    </header>
+
+    <section id="loginView" class="card narrow">
+      <h2>로그인</h2>
+      <label>아이디 <input id="loginUser" autocomplete="username" /></label>
+      <label>비밀번호 <input id="loginPass" type="password" autocomplete="current-password" /></label>
+      <button id="loginBtn">로그인</button>
+      <p id="loginMsg" class="msg"></p>
+    </section>
+
+    <section id="appView" class="hidden">
+      <nav class="tabs">
+        <button data-tab="dash" class="active">모니터링</button>
+        <button data-tab="repos">저장소</button>
+        <button data-tab="settings">설정</button>
+      </nav>
+
+      <section id="dash" class="panel active">
+        <div id="runtime" class="card compact"></div>
+        <div id="stats" class="stats3"></div>
+        <h2>감지된 이슈</h2>
+        <div id="issues" class="list"></div>
+        <h2>최근 작업 로그</h2>
+        <div id="jobs" class="list"></div>
+      </section>
+
+      <section id="repos" class="panel">
+        <div class="card">
+          <h2>저장소 관리</h2>
+          <p class="hint">감시할 저장소를 직접 추가/수정합니다. 목록은 GitHub에서 최근 업데이트된 프로젝트가 맨 위에 옵니다.</p>
+          <div class="two">
+            <label>Owner/Org <input id="repoOwner" placeholder="your-username 또는 your-org" /></label>
+            <label>Repo <input id="repoName" placeholder="project-name" /></label>
+          </div>
+          <div class="two">
+            <label>기본 브랜치 <input id="repoBranch" value="main" /></label>
+            <label>이슈 라벨 필터 <input id="repoLabels" placeholder="예: bug,agent" /></label>
+          </div>
+          <label class="check"><input id="repoEnabled" type="checkbox" checked /> 감시 활성화</label>
+          <label class="check"><input id="repoMerge" type="checkbox" checked /> 검증 통과 시 자동 머지</label>
+          <button id="saveRepoBtn">저장소 저장</button>
+          <p class="hint">개인/조직 프로젝트를 각각 owner와 repo로 등록하세요. 예: your-username/your-repo, your-org/your-app.</p>
+        </div>
+        <div id="repoList" class="list"></div>
+      </section>
+
+      <section id="settings" class="panel">
+        <div class="card">
+          <h2>기본 설정</h2>
+          <label>개인 계정 토큰
+            <input id="personalToken" type="password" placeholder="개인 repo 자동 추적용 토큰" autocomplete="off" />
+          </label>
+          <label>Classic audit token 선택 입력
+            <input id="auditToken" type="password" placeholder="read:audit_log 권한. 있으면 조직 repo 자동 발견" autocomplete="off" />
+          </label>
+          <p id="tokenState" class="hint"></p>
+          <h2>에이전트</h2>
+          <div class="two">
+            <label>구현 에이전트
+              <select id="defaultImpl"><option value="omx">omx</option><option value="claude">claude</option></select>
+            </label>
+            <label>검증 에이전트
+              <select id="defaultVerify"><option value="omx">omx</option><option value="claude">claude</option></select>
+            </label>
+          </div>
+          <label>폴링 주기(초) <input id="pollInterval" type="number" min="30" value="300" /></label>
+          <label>작업 디렉터리 <input id="workspaceDir" /></label>
+          <label>에이전트 최대 실행 시간(초) <input id="maxAgentSeconds" type="number" min="60" value="3600" /></label>
+          <label>봇 댓글 prefix <input id="commentPrefix" value="[github-issue-solver]" /></label>
+          <label class="check"><input id="pollingEnabled" type="checkbox" checked /> 주기적 감시 활성화</label>
+          <label class="check"><input id="autoRegisterEnabled" type="checkbox" checked /> 자동 등록 활성화</label>
+        </div>
+        <div class="card">
+          <h2>조직 토큰 관리</h2>
+          <p class="hint">저장소 자체의 감시/삭제/라벨 설정은 저장소 탭에서 하고, 여기서는 조직 접근 토큰만 관리합니다.</p>
+          <div id="orgTokenList" class="list compact-list"></div>
+          <div class="two">
+            <label>조직/Owner 이름 <input id="orgOwner" placeholder="예: my-org" /></label>
+            <label>조직 토큰 <input id="orgToken" type="password" placeholder="해당 조직 resource owner 토큰" autocomplete="off" /></label>
+          </div>
+        </div>
+        <div class="card">
+          <h2>비밀번호 변경</h2>
+          <p id="mustChange" class="warning hidden">비밀번호를 변경해야 합니다.</p>
+          <label>현재 비밀번호 <input id="curPass" type="password" autocomplete="current-password" /></label>
+          <label>새 비밀번호 <input id="newPass" type="password" minlength="8" autocomplete="new-password" /></label>
+          <div class="actions">
+            <button id="saveSettingsBtn">설정 저장</button>
+            <button id="changePassBtn" class="secondary">비밀번호 변경</button>
+            <button id="discoverBtn" class="secondary">저장소 자동 등록 실행</button>
+            <button id="auditDiagBtn" class="secondary">조직 생성자 권한 진단</button>
+          </div>
+          <div id="auditDiag" class="hint"></div>
+          <p class="hint">개인 repo는 개인 토큰으로 자동 등록합니다. 조직 repo는 등록된 조직 토큰별로 새 repo까지 계속 확인하고, 생성자 판별이 된 repo만 추적합니다.</p>
+        </div>
+      </section>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
