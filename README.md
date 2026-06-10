@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 
-GitHub Issue Solver는 여러분이 관리하는 저장소의 새 이슈를 감지하면, 서버에 설치된 코딩 에이전트(`omx` 또는 `claude`)에게 구현을 맡기고, 변경 사항을 브랜치로 push해 PR을 만들고, 별도의 검증 에이전트로 검증한 뒤, 통과하면 자동으로 머지하고 이슈를 닫습니다. 모든 설정과 모니터링은 모바일에서도 깔끔하게 동작하는 웹 대시보드에서 합니다.
+GitHub Issue Solver는 여러분이 관리하는 저장소의 새 이슈를 감지하면, 서버에 설치된 코딩 에이전트(`gjc`, `omx`, 또는 `claude`)에게 구현을 맡기고, 변경 사항을 브랜치로 push해 PR을 만들고, 별도의 검증 에이전트로 검증한 뒤, 통과하면 자동으로 머지하고 이슈를 닫습니다. 모든 설정과 모니터링은 모바일에서도 깔끔하게 동작하는 웹 대시보드에서 합니다.
 
 누구나 클론해서 자신의 GitHub 토큰과 에이전트를 설정하고 바로 셀프호스팅할 수 있습니다. 토큰·계정 같은 민감 정보는 코드에 전혀 박혀 있지 않으며, 실행 시 로컬 SQLite DB에만 저장됩니다.
 
@@ -49,6 +49,7 @@ GitHub Issue Solver는 여러분이 관리하는 저장소의 새 이슈를 감�
 
 - Python 3.10+
 - 서버에 설치된 코딩 에이전트 CLI 중 하나 이상
+  - [`gjc`](https://github.com/NomaDamas/gajae-code) (default) 또는
   - [`omx`](https://www.npmjs.com/package/oh-my-codex) (oh-my-codex) 또는
   - [`claude`](https://docs.anthropic.com/en/docs/claude-code) (Claude Code)
 - `git`
@@ -83,7 +84,7 @@ cp .env.example .env
 | 개인 계정 토큰 | 개인 repo 자동 추적 및 push/PR/머지에 사용 |
 | 조직 토큰 | 조직별 resource owner 토큰을 여러 개 등록 (조직 repo 접근용) |
 | Audit 토큰 (선택) | `read:audit_log` 권한. 있으면 조직에서 본인이 만든 repo를 정확히 판별 |
-| 구현/검증 에이전트 | `omx` 또는 `claude` 선택 |
+| 구현/검증 에이전트 | `gjc`, `omx`, 또는 `claude` 선택 |
 | 폴링 주기(초) | 기본 300초 (최소 30초) |
 | 작업 디렉터리 | 저장소 체크아웃 위치 (기본 `workspace/`) |
 | 에이전트 최대 실행 시간(초) | 기본 3600초 |
@@ -122,7 +123,7 @@ app/
   github_client.py  GitHub REST API 래퍼
   token_store.py    owner별 토큰 저장/조회
   db.py             SQLite 스키마/마이그레이션/시드
-  agents.py         코딩 에이전트(omx/claude) 실행
+  agents.py         코딩 에이전트(gjc/omx/claude) 실행
 static/             모바일 웹 대시보드 (HTML/CSS/JS)
 run.sh              uvicorn 실행 스크립트
 ```

@@ -505,8 +505,8 @@ def discover_repositories() -> dict[str, int]:
                         github_pushed_at,
                         github_updated_at,
                         html_url,
-                        get_setting(conn, "default_implement_agent", "omx"),
-                        get_setting(conn, "default_verify_agent", "omx"),
+                        get_setting(conn, "default_implement_agent", "gjc"),
+                        get_setting(conn, "default_verify_agent", "gjc"),
                     ),
                 )
                 created += 1

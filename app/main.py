@@ -43,8 +43,8 @@ class SettingsIn(BaseModel):
     auto_register_enabled: bool = True
     auto_register_owners: str = ""
     bot_comment_prefix: str = "[github-issue-solver]"
-    default_implement_agent: str = "omx"
-    default_verify_agent: str = "omx"
+    default_implement_agent: str = "gjc"
+    default_verify_agent: str = "gjc"
 
 
 class RepoIn(BaseModel):
@@ -53,8 +53,8 @@ class RepoIn(BaseModel):
     default_branch: str = "main"
     enabled: bool = True
     auto_merge: bool = True
-    implement_agent: str = "omx"
-    verify_agent: str = "omx"
+    implement_agent: str = "gjc"
+    verify_agent: str = "gjc"
     issue_labels: str = ""
 
 
@@ -152,8 +152,8 @@ def get_settings(user: dict = Depends(require_user)) -> dict:
             "auto_register_enabled": get_setting(conn, "auto_register_enabled", "1") == "1",
             "auto_register_owners": get_setting(conn, "auto_register_owners", ""),
             "bot_comment_prefix": get_setting(conn, "bot_comment_prefix", "[github-issue-solver]"),
-            "default_implement_agent": get_setting(conn, "default_implement_agent", "omx"),
-            "default_verify_agent": get_setting(conn, "default_verify_agent", "omx"),
+            "default_implement_agent": get_setting(conn, "default_implement_agent", "gjc"),
+            "default_verify_agent": get_setting(conn, "default_verify_agent", "gjc"),
             "last_poll_started_at": get_setting(conn, "last_poll_started_at", ""),
             "last_poll_finished_at": get_setting(conn, "last_poll_finished_at", ""),
             "last_poll_result": get_setting(conn, "last_poll_result", ""),
@@ -240,8 +240,8 @@ def list_repos(user: dict = Depends(require_user)) -> list[dict]:
 
 def validate_agent(name: str) -> str:
     name = name.lower().strip()
-    if name not in {"omx", "claude"}:
-        raise HTTPException(400, "agent는 omx 또는 claude만 지원합니다")
+    if name not in {"gjc", "omx", "claude"}:
+        raise HTTPException(400, "agent는 gjc, omx 또는 claude만 지원합니다")
     return name
 
 
@@ -259,8 +259,8 @@ def add_repo(data: RepoIn, user: dict = Depends(require_user)) -> dict:
         except GitHubError as exc:
             raise HTTPException(400, f"GitHub 저장소 확인 실패: {exc}")
     with db() as conn:
-        impl = validate_agent(data.implement_agent or get_setting(conn, "default_implement_agent", "omx"))
-        verify = validate_agent(data.verify_agent or get_setting(conn, "default_verify_agent", "omx"))
+        impl = validate_agent(data.implement_agent or get_setting(conn, "default_implement_agent", "gjc"))
+        verify = validate_agent(data.verify_agent or get_setting(conn, "default_verify_agent", "gjc"))
         conn.execute(
             """
             INSERT INTO repositories (owner, name, default_branch, enabled, auto_merge, implement_agent, verify_agent, issue_labels)

@@ -196,8 +196,8 @@ function repoForm() {
     default_branch: $('repoBranch').value || 'main',
     enabled: $('repoEnabled').checked,
     auto_merge: $('repoMerge').checked,
-    implement_agent: $('defaultImpl')?.value || 'omx',
-    verify_agent: $('defaultVerify')?.value || 'omx',
+    implement_agent: $('defaultImpl')?.value || 'gjc',
+    verify_agent: $('defaultVerify')?.value || 'gjc',
     issue_labels: $('repoLabels').value,
   };
 }
@@ -243,8 +243,8 @@ async function loadSettings() {
   $('pollingEnabled').checked = s.polling_enabled;
   $('autoRegisterEnabled').checked = s.auto_register_enabled;
   $('commentPrefix').value = s.bot_comment_prefix;
-  $('defaultImpl').value = s.default_implement_agent || 'omx';
-  $('defaultVerify').value = s.default_verify_agent || 'omx';
+  $('defaultImpl').value = s.default_implement_agent || 'gjc';
+  $('defaultVerify').value = s.default_verify_agent || 'gjc';
 }
 
 function settingsPayload(extraOrgTokens = []) {
