@@ -186,6 +186,7 @@ def index() -> HTMLResponse:
     const $ = (id) => document.getElementById(id);
     const SERVICES = [
       { name: 'GitHub Issue Solver', route: '/solver', desc: '별도 GitHub Issue Solver 작업 페이지' },
+      { name: 'Jikji 파일 인덱스', route: '/jikji', desc: 'Rust 기반 파일 탐색·검색·본문 미리보기·인덱스 관리' },
       { name: '정책 지원 에이전트', route: '/policy-agent', desc: '통계·공공데이터·법률 지식 네트워크 웹챗 · 내부 서비스 3123' },
       { name: 'Marker Monitor', route: '/monitor', desc: '마커 연구원 작업 모니터링 · 내부 서비스 8799' },
       { name: 'Bid Monitoring', route: '/bid-monitor', desc: 'AI 공공사업 입찰·지원사업 모니터링 대시보드 · 내부 서비스 8800' },
@@ -280,6 +281,38 @@ def index() -> HTMLResponse:
 
 MONITOR_UPSTREAM = "http://127.0.0.1:8799"
 BID_MONITOR_UPSTREAM = "http://127.0.0.1:8800"
+JIKJI_UPSTREAM = "http://127.0.0.1:18768"
+
+
+def _rewrite_jikji_html(html: str) -> str:
+    replacements = (
+        ('href="/', 'href="/jikji/'),
+        ("href='/", "href='/jikji/"),
+        ('src="/', 'src="/jikji/'),
+        ("src='/", "src='/jikji/"),
+        ('fetch("/api/', 'fetch("/jikji/api/'),
+        ("fetch('/api/", "fetch('/jikji/api/"),
+        ('action="/', 'action="/jikji/'),
+        ("action='/", "action='/jikji/"),
+    )
+    for old, new in replacements:
+        html = html.replace(old, new)
+    return html
+
+
+def _fetch_jikji_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict[str, str], bytes]:
+    url = f"{JIKJI_UPSTREAM}/{path.lstrip('/')}" if path else JIKJI_UPSTREAM
+    headers = {"User-Agent": "Markr-Console/jikji-proxy"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = URLRequest(url, data=body, method=method, headers=headers)
+    try:
+        with urlopen(req, timeout=30) as response:
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+    except HTTPError as exc:
+        return exc.code, {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}, exc.read()
+    except URLError as exc:
+        raise HTTPException(502, f"Jikji upstream unavailable: {exc.reason}") from exc
 POLICY_AGENT_UPSTREAM = "http://127.0.0.1:3123"
 
 
@@ -352,6 +385,60 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 _NO_REDIRECT_OPENER = build_opener(_NoRedirect)
+
+JIKJI_UPSTREAM = "http://127.0.0.1:18768"
+
+
+def _rewrite_jikji_html(html: str) -> str:
+    for old, new in (
+        ('href="/', 'href="/jikji/'),
+        ("href='/", "href='/jikji/"),
+        ('src="/', 'src="/jikji/'),
+        ("src='/", "src='/jikji/"),
+        ('fetch("/api/', 'fetch("/jikji/api/'),
+        ("fetch('/api/", "fetch('/jikji/api/"),
+        ('action="/', 'action="/jikji/'),
+        ("action='/", "action='/jikji/"),
+    ):
+        html = html.replace(old, new)
+    return html
+
+
+def _fetch_jikji_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict[str, str], bytes]:
+    url = f"{JIKJI_UPSTREAM}/{path.lstrip('/')}" if path else JIKJI_UPSTREAM
+    headers = {"User-Agent": "Markr-Console/jikji-proxy"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    req = URLRequest(url, data=body, method=method, headers=headers)
+    try:
+        with urlopen(req, timeout=30) as response:
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+    except HTTPError as exc:
+        return exc.code, {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}, exc.read()
+    except URLError as exc:
+        raise HTTPException(502, f"Jikji upstream unavailable: {exc.reason}") from exc
+
+
+@app.get("/jikji")
+def jikji() -> HTMLResponse:
+    status, headers, body = _fetch_jikji_upstream()
+    ctype = headers.get("content-type", "")
+    if status >= 400 or "html" not in ctype.lower():
+        raise HTTPException(status if status >= 400 else 502, "Jikji upstream did not return HTML")
+    return HTMLResponse(_rewrite_jikji_html(body.decode("utf-8", "replace")), status_code=status, headers={"Cache-Control": "no-store, must-revalidate"})
+
+
+@app.api_route("/jikji/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def jikji_proxy(path: str, request: Request) -> Response:
+    body = await request.body()
+    upstream_path = f"{path}?{request.url.query}" if request.url.query else path
+    status, headers, payload = _fetch_jikji_upstream(upstream_path, method=request.method.upper(), body=body or None, content_type=request.headers.get("content-type"))
+    ctype = headers.get("content-type", "application/octet-stream")
+    if status >= 400:
+        raise HTTPException(status, (payload.decode("utf-8", "replace") if payload else "Jikji upstream error")[:200])
+    if "text/html" in ctype.lower():
+        return HTMLResponse(_rewrite_jikji_html(payload.decode("utf-8", "replace")), status_code=status, headers={"Cache-Control": "no-store, must-revalidate"})
+    return Response(content=payload, status_code=status, media_type=ctype)
 
 
 def _fetch_bid_monitor_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None, cookie: str | None = None, authorization: str | None = None) -> tuple[int, dict[str, str], bytes]:
