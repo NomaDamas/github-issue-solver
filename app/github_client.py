@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import urllib.error
 import urllib.parse
@@ -25,6 +26,9 @@ class GitHubClient:
         if not self.token:
             raise GitHubError(401, "GitHub token is not configured")
 
+    def token_fingerprint(self) -> str:
+        return hashlib.sha256(self.token.encode()).hexdigest()[:10] if self.token else "empty"
+
     def request(self, method: str, path: str, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> Any:
         if params:
             path += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -48,6 +52,8 @@ class GitHubClient:
                 msg = json.loads(raw).get("message", raw)
             except Exception:
                 msg = raw
+            if e.code == 401:
+                msg = f"{msg} (token_sha256={self.token_fingerprint()}, token_len={len(self.token)})"
             raise GitHubError(e.code, msg, {k.lower(): v for k, v in e.headers.items()}) from e
 
     def request_with_headers(self, method: str, path: str, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> tuple[Any, dict[str, str]]:
@@ -72,6 +78,8 @@ class GitHubClient:
                 msg = json.loads(raw).get("message", raw)
             except Exception:
                 msg = raw
+            if e.code == 401:
+                msg = f"{msg} (token_sha256={self.token_fingerprint()}, token_len={len(self.token)})"
             raise GitHubError(e.code, msg, {k.lower(): v for k, v in e.headers.items()}) from e
 
     @staticmethod

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
 import re
 import secrets
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qsl, urlencode
 from urllib.request import Request as URLRequest, urlopen, build_opener, HTTPRedirectHandler
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -21,10 +27,65 @@ from .orchestrator import create_jobs_for_repo_untracked_issues, discover_open_i
 from .package_lake_service import PACKAGE_LAKE_ENDPOINT, create_launch_url
 from .token_store import configured_org_owners, configured_tokens, delete_owner_token, get_any_token, get_audit_token, get_owner_token, list_owner_tokens, set_owner_token
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="GitHub Issue Solver", version="0.1.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 register_download_routes(app)
 _bg_task: asyncio.Task | None = None
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", "").strip() or f"req_{uuid.uuid4().hex}"
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started) * 1000
+        logger.exception("request route=%s status=500 duration_ms=%.1f request_id=%s", _safe_route(request), duration_ms, request_id)
+        raise
+    duration_ms = (time.perf_counter() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    logger.info("request route=%s status=%s duration_ms=%.1f request_id=%s", _safe_route(request), response.status_code, duration_ms, request_id)
+    return response
+
+
+def _safe_route(request: Request) -> str:
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    if template:
+        return template
+    first = str(request.scope.get("path", "/")).strip("/").split("/", 1)[0]
+    return "/" + first if first else "/"
+
+
+def _proxy_error(request: Request, code: str, message: str, status: int, retryable: bool, details: dict[str, Any] | None = None) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", f"req_{uuid.uuid4().hex}")
+    return JSONResponse(
+        status_code=status,
+        content={"error": message, "error_detail": {"code": code, "message": message, "request_id": request_id, "retryable": retryable, "details": details or {}}},
+        headers={"X-Request-ID": request_id},
+    )
+
+
+def _jikji_management_token() -> str:
+    # The token is intentionally server-side only; it is never rendered or logged.
+    return os.environ.get("JIKJI_MANAGEMENT_TOKEN", "").strip()
+
+
+def _jikji_path(path: str, query: str) -> str:
+    pairs = parse_qsl(query, keep_blank_values=True)
+    mutation_name = path.lstrip("/").split("/", 2)[1] if path.lstrip("/").startswith("api/") else path.lstrip("/").split("/", 1)[0]
+    mutation = mutation_name in {"root", "refresh", "reindex", "reindex-folder", "deep-index", "deep-index-target", "remove-folder", "remove-root", "open", "reveal"}
+    if mutation:
+        pairs = [(key, value) for key, value in pairs if key.lower() != "token"]
+        token = _jikji_management_token()
+        if token:
+            pairs.append(("token", token))
+    encoded = urlencode(pairs)
+    return f"{path}?{encoded}" if encoded else path
 
 
 class LoginIn(BaseModel):
@@ -220,22 +281,6 @@ def index() -> HTMLResponse:
       `).join('');
     }
 
-    function renderDemos() {
-      $('demoGrid').innerHTML = DEMO_SERVICES.map((s) => `
-        <${s.url.startsWith('/api/') ? 'button' : 'a'} class="service-card" ${s.url.startsWith('/api/') ? `type="button" data-launch="${s.url}"` : `href="${s.url}" target="_blank" rel="noopener"`}>
-          ${s.icon ? `<span class="service-icon" aria-hidden="true">${s.icon}</span>` : ''}
-          <b>${s.name}</b>
-          <span>${s.desc}</span>
-          <small>${s.endpoint || s.url}</small>
-          ${s.url.startsWith('/api/') ? '<small>MarkerAI 관리 콘솔 SSO · USER 최소 권한</small>' : ''}
-        </${s.url.startsWith('/api/') ? 'button' : 'a'}>
-      `).join('');
-      document.querySelectorAll('[data-launch]').forEach((button) => button.onclick = async () => {
-        const result = await api(button.dataset.launch, { method: 'POST' });
-        location.assign(result.launch_url);
-      });
-    }
-
     function renderDownloads() {
       $('downloadGrid').innerHTML = DOWNLOAD_APPS.map((app) => `
         <a class="service-card" href="${app.url}" target="_blank" rel="noopener">
@@ -259,6 +304,22 @@ def index() -> HTMLResponse:
         $('portalView').classList.add('hidden');
         $('logoutBtn').classList.add('hidden');
       }
+    }
+
+    function renderDemos() {
+      $('demoGrid').innerHTML = DEMO_SERVICES.map((s) => `
+        <${s.url.startsWith('/api/') ? 'button' : 'a'} class="service-card" ${s.url.startsWith('/api/') ? `type="button" data-launch="${s.url}"` : `href="${s.url}" target="_blank" rel="noopener"`}>
+          ${s.icon ? `<span class="service-icon" aria-hidden="true">${s.icon}</span>` : ''}
+          <b>${s.name}</b>
+          <span>${s.desc}</span>
+          <small>${s.endpoint || s.url}</small>
+          ${s.url.startsWith('/api/') ? '<small>MarkerAI 관리 콘솔 SSO · USER 최소 권한</small>' : ''}
+        </${s.url.startsWith('/api/') ? 'button' : 'a'}>
+      `).join('');
+      document.querySelectorAll('[data-launch]').forEach((button) => button.onclick = async () => {
+        const result = await api(button.dataset.launch, { method: 'POST' });
+        location.assign(result.launch_url);
+      });
     }
 
     $('loginBtn').onclick = async () => {
@@ -288,11 +349,8 @@ def _rewrite_jikji_html(html: str) -> str:
     """Scope root-relative browser URLs to the mounted /jikji prefix once."""
     # Keep absolute URLs, protocol-relative URLs, and URLs already scoped to
     # this mount untouched. The Rust UI uses both quoted attributes and fetch.
-    root_url = re.compile(r"([\"'`(=])/(?!/|jikji(?:/|[\"'`?#)]|$))")
+    root_url = re.compile(r"([\"'`(=])/(?!/|jikji(?:/|[\"'`?#)]|\$\{|$))")
     html = root_url.sub(r"\1/jikji/", html)
-    # Template-built API paths are root-relative in the embedded SPA.
-    html = html.replace("const url = `${path}?${params(values)}`;", "const url = `/jikji${path}?${params(values)}`;")
-    html = html.replace("location.assign(`/download?", "location.assign(`/jikji/download?")
     return html
 
 
@@ -399,42 +457,23 @@ class _NoRedirect(HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = build_opener(_NoRedirect)
 
 @app.get("/jikji")
-def jikji() -> Response:
-    status, headers, body = _fetch_jikji_upstream()
+def jikji(request: Request, user: dict = Depends(require_user)) -> Response:
+    try:
+        status, headers, body = _fetch_jikji_upstream()
+    except HTTPException as exc:
+        return _proxy_error(request, "UPSTREAM_UNAVAILABLE", str(exc.detail), exc.status_code, True)
     return _jikji_response(status, headers, body)
 
 
 @app.api_route("/jikji/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def jikji_proxy(path: str, request: Request) -> Response:
+async def jikji_proxy(path: str, request: Request, user: dict = Depends(require_user)) -> Response:
     body = await request.body()
-    upstream_path = f"{path}?{request.url.query}" if request.url.query else path
-    status, headers, payload = _fetch_jikji_upstream(
-        upstream_path,
-        method=request.method.upper(),
-        body=body or None,
-        content_type=request.headers.get("content-type"),
-    )
-    return _jikji_response(status, headers, payload)
-
-
-def _fetch_bid_monitor_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None, cookie: str | None = None, authorization: str | None = None) -> tuple[int, dict[str, str], bytes]:
-    url = f"{BID_MONITOR_UPSTREAM}/{path.lstrip('/')}" if path else BID_MONITOR_UPSTREAM
-    headers = {"User-Agent": "Markr-Console/bid-monitor-proxy"}
-    if content_type:
-        headers["Content-Type"] = content_type
-    if cookie:
-        headers["Cookie"] = cookie
-    if authorization:
-        headers["Authorization"] = authorization
-    req = URLRequest(url, data=body, method=method, headers=headers)
+    upstream_path = _jikji_path(path, request.url.query)
     try:
-        with _NO_REDIRECT_OPENER.open(req, timeout=30) as response:
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
-    except HTTPError as exc:
-        return exc.code, {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}, exc.read()
-    except URLError as exc:
-        raise HTTPException(502, f"bid monitor upstream unavailable: {exc.reason}") from exc
-
+        status, headers, payload = _fetch_jikji_upstream(upstream_path, method=request.method.upper(), body=body or None, content_type=request.headers.get("content-type"))
+    except HTTPException as exc:
+        return _proxy_error(request, "UPSTREAM_UNAVAILABLE", str(exc.detail), exc.status_code, True)
+    return _jikji_response(status, headers, payload)
 
 
 def _fetch_monitor_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict[str, str], bytes]:

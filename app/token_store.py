@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 
 from .db import get_setting, set_setting
 
@@ -45,6 +46,16 @@ def migrate_legacy_owner_tokens(conn: sqlite3.Connection) -> None:
         )
 
 
+def env_fallback_token() -> str:
+    """Return the supervisor-refreshed GitHub token, when available.
+
+    The UI/database can hold long-lived owner tokens, but GitHub CLI/keyring tokens
+    are the most reliable source on this workstation. Prefer the supervisor
+    token so a stale DB token cannot silently stall polling for every repo.
+    """
+    return os.environ.get("GIS_GH_TOKEN_FALLBACK", "").strip()
+
+
 def get_owner_token(conn: sqlite3.Connection, owner: str) -> str:
     """Return the token to use for a given repo owner.
 
@@ -52,6 +63,9 @@ def get_owner_token(conn: sqlite3.Connection, owner: str) -> str:
     are migrated/read for backward compatibility; otherwise we fall back to the
     personal account token.
     """
+    fallback = env_fallback_token()
+    if fallback:
+        return fallback
     migrate_legacy_owner_tokens(conn)
     owner_norm = normalize_owner(owner)
     if owner_norm:
@@ -65,6 +79,9 @@ def get_owner_token(conn: sqlite3.Connection, owner: str) -> str:
 
 
 def get_any_token(conn: sqlite3.Connection) -> str:
+    fallback = env_fallback_token()
+    if fallback:
+        return fallback
     migrate_legacy_owner_tokens(conn)
     row = conn.execute("SELECT token FROM owner_tokens ORDER BY owner LIMIT 1").fetchone()
     legacy = conn.execute("SELECT value FROM settings WHERE key LIKE 'github_token_owner_%' AND value<>'' ORDER BY key LIMIT 1").fetchone()
@@ -126,4 +143,4 @@ def configured_tokens(conn: sqlite3.Connection) -> dict[str, bool]:
 
 
 def get_audit_token(conn: sqlite3.Connection) -> str:
-    return get_setting(conn, "github_token_audit", "")
+    return env_fallback_token() or get_setting(conn, "github_token_audit", "")

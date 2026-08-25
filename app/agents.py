@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -14,24 +16,36 @@ class AgentResult:
     returncode: int
 
 
+def resolve_command(binary: str) -> str:
+    path = shutil.which(binary)
+    if path:
+        return path
+    for candidate in (Path.home() / ".local" / "bin" / binary, Path.home() / "bin" / binary):
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return binary
+
+
 def run_agent(agent: str, repo_dir: Path, prompt: str, timeout: int) -> AgentResult:
     agent = (agent or "gjc").lower().strip()
     env = os.environ.copy()
+    fallback_path = f"{Path.home() / 'bin'}:{Path.home() / '.local' / 'bin'}"
+    env["PATH"] = fallback_path + (":" + env["PATH"] if env.get("PATH") else "")
     env.setdefault("TERM", "xterm-256color")
-
     input_text: str | None = prompt
     prompt_path: str | None = None
 
     if agent == "claude":
         # Pass the prompt via stdin so large GitHub issue bodies do not hit OS argv limits.
-        cmd = ["claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "text"]
+        cmd = [resolve_command("claude"), "-p", "--permission-mode", "bypassPermissions", "--output-format", "text"]
     elif agent == "omx":
         # omx/codex accepts '-' to read instructions from stdin.
-        cmd = ["omx", "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", str(repo_dir), "-"]
+        cmd = [resolve_command("omx"), "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", str(repo_dir), "-"]
     elif agent == "gjc":
         # GJC uses @file for robust non-interactive prompt ingestion. Clear GitHub
         # token env vars because stale GH_TOKEN/GITHUB_TOKEN values make GJC prefer
-        # broken token auth over its working keyring/OAuth setup.
+        # broken token auth over its working keyring/OAuth setup. Keep sessions
+        # ephemeral and PTY-free so unattended runs cannot block on resume/pickers.
         env.pop("GH_TOKEN", None)
         env.pop("GITHUB_TOKEN", None)
         env.setdefault("GJC_NO_PTY", "1")
@@ -39,7 +53,7 @@ def run_agent(agent: str, repo_dir: Path, prompt: str, timeout: int) -> AgentRes
             f.write(prompt)
             prompt_path = f.name
         input_text = None
-        cmd = ["gjc", "-p", "--mode", "text", "--no-session", f"@{prompt_path}"]
+        cmd = [resolve_command("gjc"), "-p", "--mode", "text", "--no-session", "--no-pty", f"@{prompt_path}"]
     else:
         raise ValueError(f"Unsupported agent: {agent}. Use 'gjc', 'omx', or 'claude'.")
 

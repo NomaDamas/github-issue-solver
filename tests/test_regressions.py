@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import agents
+from app import main
 from app import downloads
 from fastapi import Request
 from app import orchestrator
@@ -288,7 +289,7 @@ class RegressionTests(unittest.TestCase):
         rewritten = main._rewrite_jikji_html(html)
         self.assertIn('fetch("/jikji/api/status")', rewritten)
         self.assertIn('fetch("/jikji/api/find?q=Rust")', rewritten)
-        self.assertIn('fetch("/jikji/api/status"); fetch("/jikji/api/status")', rewritten)
+        self.assertIn('fetch("/jikji/api/status"); fetch("/jikji/api/find?q=Rust"); fetch("/jikji/api/status")', rewritten)
         self.assertIn('src="/jikji/asset.js"', rewritten)
         self.assertEqual(rewritten, main._rewrite_jikji_html(rewritten))
         self.assertIn('href="https://example.test/x"', rewritten)
@@ -314,13 +315,29 @@ class RegressionTests(unittest.TestCase):
                 "headers": [(b"content-type", b"application/json")], "client": ("test", 1),
                 "server": ("test", 80), "scheme": "http", "http_version": "1.1",
             }
-            request = Request(scope, receive=lambda: {"type": "http.request", "body": b'{"ok":true}', "more_body": False})
+            async def receive():
+                return {"type": "http.request", "body": b'{"ok":true}', "more_body": False}
+            request = Request(scope, receive=receive)
             return await main.jikji_proxy("api/reindex", request)
 
         with patch.object(main, "_fetch_jikji_upstream", side_effect=fake_fetch):
             response = __import__("asyncio").run(run_proxy())
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(captured, {"path": "api/reindex?path=%2Ftmp%2Froot&token=abc", "method": "POST", "body": b'{"ok":true}', "content_type": "application/json"})
+        self.assertEqual(captured, {"path": "api/reindex?path=%2Ftmp%2Froot", "method": "POST", "body": b'{"ok":true}', "content_type": "application/json"})
+
+    def test_jikji_path_replaces_untrusted_mutation_token(self) -> None:
+        with patch.dict(os.environ, {"JIKJI_MANAGEMENT_TOKEN": "server-secret"}, clear=False):
+            path = main._jikji_path("api/reindex", "path=%2Ftmp%2Froot&token=client-secret")
+        self.assertEqual(path, "api/reindex?path=%2Ftmp%2Froot&token=server-secret")
+        self.assertNotIn("client-secret", path)
+
+    def test_jikji_path_preserves_read_query(self) -> None:
+        self.assertEqual(main._jikji_path("api/find", "q=Rust&top_k=20"), "api/find?q=Rust&top_k=20")
+
+    def test_safe_route_does_not_include_full_path_or_query(self) -> None:
+        scope = {"type": "http", "path": "/jikji/api/preview/secret", "query_string": b"token=secret"}
+        request = Request(scope)
+        self.assertEqual(main._safe_route(request), "/jikji")
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,6 +32,13 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .panel { display:none; }
 .panel.active { display:block; }
 .actions { display:flex; gap:8px; flex-wrap:wrap; margin:16px 0 0; }
+.portal-quick { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 14px; }
+.service-chip { background:#334155; border:1px solid var(--line); color:#fff; text-decoration:none; border-radius:999px; padding:10px 12px; font-weight:800; font-size:14px; display:inline-flex; align-items:center; justify-content:center; min-height:40px; }
+.portal-summary { margin-top:4px; margin-bottom:12px; }
+.service-list { display:grid; gap:8px; }
+.service-item { background:#0f172a; border:1px solid var(--line); border-radius:14px; padding:12px; cursor:pointer; text-decoration:none; color:inherit; display:block; }
+.service-item .name { font-weight:800; display:block; margin-bottom:4px; }
+.service-item .meta { color:var(--muted); font-size:12px; line-height:1.45; }
 .grid,.stats3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap); margin-bottom:22px; }
 .stat { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:15px; min-height:92px; }
 .stat b { display:block; font-size:24px; line-height:1.2; margin-top:8px; word-break:break-word; }
@@ -99,6 +106,10 @@ textarea { min-height:86px; resize:vertical; font-family:inherit; }
   .card-actions button,.button-link { width:100%; }
   .tabs { grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; padding-bottom:10px; margin-bottom:12px; }
   .tabs button { padding:10px 7px; font-size:13px; }
+  .portal-quick { display:grid; grid-template-columns:1fr; }
+  .service-chip { width:100%; }
+  .service-list { grid-template-columns:1fr; }
+  .service-item { width:100%; }
   .steps { grid-template-columns:1fr 1fr; gap:6px; }
   .step { font-size:11px; padding:7px 4px; }
   .item-head { display:grid; grid-template-columns:1fr; }

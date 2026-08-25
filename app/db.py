@@ -175,6 +175,7 @@ def init_db() -> None:
             "github_token_personal": "",
             "github_token_audit": "",
             "bot_comment_prefix": "[github-issue-solver]",
+            "notification_target": "discord:1517044116167331850",
             "max_agent_seconds": "3600",
             "polling_enabled": "1",
             "auto_register_enabled": "1",

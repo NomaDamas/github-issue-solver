@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import fcntl
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import textwrap
 import traceback
@@ -13,12 +15,12 @@ from typing import Any
 
 from .agents import run_agent
 from .db import db, get_setting, row_to_dict, set_setting
-from .github_client import GitHubClient
+from .github_client import GitHubClient, GitHubError
 from .token_store import configured_org_owners, get_any_token, get_audit_token, get_owner_token
 
 RUNNING = False
 FINAL_ISSUE_STATUSES = {"verification_failed", "failed", "merged", "verified", "resolved", "closed"}
-
+AUDIT_FALLBACK_WARNED: set[str] = set()
 
 def touch_setting(key: str) -> None:
     with db() as conn:
@@ -28,6 +30,23 @@ def touch_setting(key: str) -> None:
 
 def mask_token(text: str, token: str) -> str:
     return text.replace(token, "***") if token else text
+
+
+def notify_target() -> str:
+    with db() as conn:
+        return get_setting(conn, "notification_target", "discord:1517044116167331850")
+
+
+def send_notification(message: str) -> None:
+    message = message.strip()
+    if not message:
+        return
+    target = notify_target().strip() or "discord:1517044116167331850"
+    hermes = shutil.which("hermes")
+    if hermes:
+        subprocess.run([hermes, "send", "--to", target, message], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return
+    raise RuntimeError("hermes CLI not found for notifications")
 
 
 def run_cmd(args: list[str], cwd: Path, token: str = "", timeout: int = 300) -> str:
@@ -55,6 +74,12 @@ def safe_branch(issue_number: int, job_id: int) -> str:
     return f"agent/issue-{issue_number}-{job_id}"
 
 
+def reset_workspace_for_checkout(repo_dir: Path, ref: str, token: str) -> None:
+    """Discard stale agent/build output before switching branches."""
+    run_cmd(["git", "reset", "--hard"], repo_dir, token=token)
+    run_cmd(["git", "clean", "-fd"], repo_dir, token=token)
+    run_cmd(["git", "checkout", ref], repo_dir, token=token)
+
 def checkout_workspace(owner: str, name: str, default_branch: str, branch: str, workspace: Path, token: str, job_id: int) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
     repo_dir = workspace / f"{owner}__{name}"
@@ -64,7 +89,7 @@ def checkout_workspace(owner: str, name: str, default_branch: str, branch: str, 
         run_cmd(["git", "clone", url, str(repo_dir)], workspace, token=token, timeout=900)
     append_job_log(job_id, "Fetching latest repository state")
     run_cmd(["git", "fetch", "origin", "--prune"], repo_dir, token=token, timeout=600)
-    run_cmd(["git", "checkout", default_branch], repo_dir, token=token)
+    reset_workspace_for_checkout(repo_dir, default_branch, token)
     run_cmd(["git", "reset", "--hard", f"origin/{default_branch}"], repo_dir, token=token)
     run_cmd(["git", "clean", "-fd"], repo_dir, token=token)
     run_cmd(["git", "checkout", "-B", branch], repo_dir, token=token)
@@ -153,8 +178,15 @@ def process_implementation(job_id: int) -> None:
         if issue["status"] in FINAL_ISSUE_STATUSES:
             conn.execute("UPDATE jobs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=? WHERE id=?", (f"Issue is terminal ({issue['status']}); no retry is allowed.", job_id))
             return
-        conn.execute("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP, branch=?, agent=? WHERE id=?", (branch, repo["implement_agent"], job_id))
+        conn.execute("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP, error='', branch=?, agent=? WHERE id=?", (branch, repo["implement_agent"], job_id))
         conn.execute("UPDATE issues SET status='implementing', updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue["id"],))
+
+    try:
+        send_notification(f"[작업 시작] implement {repo['owner']}/{repo['name']} #{issue['number']} — {issue['title']}")
+    except Exception:
+        Path("logs").mkdir(exist_ok=True)
+        with open("logs/poller-errors.log", "a", encoding="utf-8") as f:
+            f.write(f"\n--- notify implement-start {repo['owner']}/{repo['name']} #{issue['number']} ---\n{traceback.format_exc()}\n")
 
     gh = GitHubClient(token)
     repo_dir = checkout_workspace(repo["owner"], repo["name"], repo["default_branch"], branch, workspace, token, job_id)
@@ -202,7 +234,7 @@ def process_verification(job_id: int) -> None:
             """
             SELECT id FROM jobs
             WHERE issue_id=? AND type='verify' AND id<>?
-              AND (status='failed' OR verdict='FAIL')
+              AND verdict='FAIL'
             LIMIT 1
             """,
             (issue["id"], job_id),
@@ -214,19 +246,28 @@ def process_verification(job_id: int) -> None:
             )
             conn.execute("UPDATE issues SET status='verification_failed', updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue["id"],))
             return
-        conn.execute("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP, agent=? WHERE id=?", (repo["verify_agent"], job_id))
+        conn.execute("UPDATE jobs SET status='running', started_at=CURRENT_TIMESTAMP, error='', agent=? WHERE id=?", (repo["verify_agent"], job_id))
+
+    try:
+        send_notification(f"[작업 시작] verify {repo['owner']}/{repo['name']} #{issue['number']} — {issue['title']}")
+    except Exception:
+        Path("logs").mkdir(exist_ok=True)
+        with open("logs/poller-errors.log", "a", encoding="utf-8") as f:
+            f.write(f"\n--- notify verify-start {repo['owner']}/{repo['name']} #{issue['number']} ---\n{traceback.format_exc()}\n")
 
     repo_dir = workspace / f"{repo['owner']}__{repo['name']}"
     if not repo_dir.exists():
         repo_dir = checkout_workspace(repo["owner"], repo["name"], repo["default_branch"], job["branch"], workspace, token, job_id)
     run_cmd(["git", "fetch", "origin", "--prune"], repo_dir, token=token, timeout=600)
-    run_cmd(["git", "checkout", job["branch"]], repo_dir, token=token)
+    reset_workspace_for_checkout(repo_dir, job["branch"], token)
     run_cmd(["git", "reset", "--hard", f"origin/{job['branch']}"], repo_dir, token=token)
     run_cmd(["git", "clean", "-fd"], repo_dir, token=token)
     append_job_log(job_id, f"Running verification agent: {repo['verify_agent']}")
     result = run_agent(repo["verify_agent"], repo_dir, verification_prompt(repo, issue, job["pr_number"]), timeout)
     append_job_log(job_id, result.output)
-    verdict = parse_verdict(result.output) if result.ok else "FAIL"
+    if not result.ok:
+        raise RuntimeError(f"Verification agent exited with {result.returncode}")
+    verdict = parse_verdict(result.output)
     verify_summary = compact_agent_summary(result.output)
     gh = GitHubClient(token)
     if verdict == "PASS" and int(repo["auto_merge"]):
@@ -256,9 +297,21 @@ def process_verification(job_id: int) -> None:
     else:
         gh.create_issue_comment(repo["owner"], repo["name"], issue["number"], f"{prefix} 검증 실패: PR #{job['pr_number']}은 머지하지 않았습니다. 이 이슈는 자동 재시도하지 않고 verification_failed 상태로 남깁니다.")
         issue_status = "verification_failed"
+    try:
+        if verdict == "PASS":
+            if int(repo["auto_merge"]):
+                send_notification(f"[작업 종료] verify {repo['owner']}/{repo['name']} #{issue['number']} — PASS / merged")
+            else:
+                send_notification(f"[작업 종료] verify {repo['owner']}/{repo['name']} #{issue['number']} — PASS / manual merge required")
+        else:
+            send_notification(f"[작업 종료] verify {repo['owner']}/{repo['name']} #{issue['number']} — FAIL")
+    except Exception:
+        Path("logs").mkdir(exist_ok=True)
+        with open("logs/poller-errors.log", "a", encoding="utf-8") as f:
+            f.write(f"\n--- notify verify-end {repo['owner']}/{repo['name']} #{issue['number']} ---\n{traceback.format_exc()}\n")
     with db() as conn:
         job_status = "completed" if verdict == "PASS" else "failed"
-        conn.execute("UPDATE jobs SET status=?, finished_at=CURRENT_TIMESTAMP, verdict=? WHERE id=?", (job_status, verdict, job_id))
+        conn.execute("UPDATE jobs SET status=?, finished_at=CURRENT_TIMESTAMP, verdict=?, error='' WHERE id=?", (job_status, verdict, job_id))
         conn.execute("UPDATE issues SET status=?, verify_summary=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue_status, verify_summary, issue["id"]))
 
 
@@ -268,12 +321,27 @@ def fail_job(job_id: int, exc: BaseException) -> None:
         job = row_to_dict(conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
         conn.execute("UPDATE jobs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=? WHERE id=?", (err, job_id))
         if job:
-            issue_status = "failed" if job["type"] == "implement" else "verification_failed"
-            if job["type"] == "verify":
-                conn.execute("UPDATE jobs SET verdict='FAIL' WHERE id=?", (job_id,))
+            issue_status = "failed" if job["type"] == "implement" else "verifying"
             conn.execute("UPDATE issues SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue_status, job["issue_id"]))
     append_job_log(job_id, "FAILED:\n" + err)
 
+
+def recover_interrupted_jobs() -> int:
+    """Requeue jobs left running by a process crash or system reboot."""
+    with db() as conn:
+        rows = conn.execute("SELECT id, issue_id, type FROM jobs WHERE status='running' ORDER BY id").fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE jobs SET status='queued', started_at=NULL, error=? WHERE id=?",
+                ("Recovered after service restart; requeued interrupted job.", row["id"]),
+            )
+            conn.execute(
+                "UPDATE jobs SET log = substr(log || ?, -200000) WHERE id=?",
+                ("\nRecovered after service restart; requeued interrupted job.", row["id"]),
+            )
+            issue_status = "queued" if row["type"] == "implement" else "verifying"
+            conn.execute("UPDATE issues SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue_status, row["issue_id"]))
+    return len(rows)
 
 def parse_owner_list(raw: str) -> set[str]:
     return {part.strip() for part in raw.replace("\n", ",").split(",") if part.strip()}
@@ -394,6 +462,14 @@ def discover_repositories() -> dict[str, int]:
             try:
                 names = GitHubClient(audit_token).org_repos_created_by_login(owner, audit_login)
                 audit_ok = True
+            except GitHubError as exc:
+                skipped += 1
+                audit_unavailable += 1
+                if owner.lower() not in AUDIT_FALLBACK_WARNED:
+                    AUDIT_FALLBACK_WARNED.add(owner.lower())
+                    Path("logs").mkdir(exist_ok=True)
+                    with open("logs/poller-errors.log", "a", encoding="utf-8") as f:
+                        f.write(f"\n--- audit created repo discovery unavailable {owner}; falling back to first commit ({exc}) ---\n")
             except Exception:
                 skipped += 1
                 audit_unavailable += 1
@@ -556,6 +632,12 @@ def create_jobs_for_repo_untracked_issues(repo_id: int) -> int:
             conn.execute("INSERT INTO jobs (issue_id, repo_id, type, status, agent) VALUES (?, ?, 'implement', 'queued', ?)", (issue["id"], repo_id, repo["implement_agent"]))
             conn.execute("UPDATE issues SET status='queued', updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue["id"],))
             created += 1
+            try:
+                send_notification(f"[이슈 감지] {repo['owner']}/{repo['name']} #{issue['number']} — {issue['title']}")
+            except Exception:
+                Path("logs").mkdir(exist_ok=True)
+                with open("logs/poller-errors.log", "a", encoding="utf-8") as f:
+                    f.write(f"\n--- notify detect {repo['owner']}/{repo['name']} #{issue['number']} ---\n{traceback.format_exc()}\n")
     return created
 
 
@@ -686,23 +768,29 @@ def process_next_job() -> bool:
     global RUNNING
     if RUNNING:
         return False
-    with db() as conn:
-        job = row_to_dict(conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone())
-    if not job:
-        return False
-    RUNNING = True
-    try:
-        if job["type"] == "implement":
-            process_implementation(job["id"])
-        elif job["type"] == "verify":
-            process_verification(job["id"])
-        else:
-            raise RuntimeError(f"Unknown job type: {job['type']}")
-    except BaseException as exc:
-        fail_job(job["id"], exc)
-    finally:
-        RUNNING = False
-    return True
+    Path("logs").mkdir(exist_ok=True)
+    with open("logs/process-next.lock", "w", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        with db() as conn:
+            job = row_to_dict(conn.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone())
+        if not job:
+            return False
+        RUNNING = True
+        try:
+            if job["type"] == "implement":
+                process_implementation(job["id"])
+            elif job["type"] == "verify":
+                process_verification(job["id"])
+            else:
+                raise RuntimeError(f"Unknown job type: {job['type']}")
+        except BaseException as exc:
+            fail_job(job["id"], exc)
+        finally:
+            RUNNING = False
+        return True
 
 
 async def background_loop() -> None:
