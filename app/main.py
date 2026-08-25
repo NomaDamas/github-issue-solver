@@ -294,6 +294,8 @@ def _rewrite_jikji_html(html: str) -> str:
         ("fetch('/api/", "fetch('/jikji/api/"),
         ('action="/', 'action="/jikji/'),
         ("action='/", "action='/jikji/"),
+        ("const url = `${path}?${params(values)}`;", "const url = `/jikji${path}?${params(values)}`;"),
+        ("location.assign(`/download?", "location.assign(`/jikji/download?"),
     )
     for old, new in replacements:
         html = html.replace(old, new)
@@ -399,6 +401,8 @@ def _rewrite_jikji_html(html: str) -> str:
         ("fetch('/api/", "fetch('/jikji/api/"),
         ('action="/', 'action="/jikji/'),
         ("action='/", "action='/jikji/"),
+        ("const url = `${path}?${params(values)}`;", "const url = `/jikji${path}?${params(values)}`;"),
+        ("location.assign(`/download?", "location.assign(`/jikji/download?"),
     ):
         html = html.replace(old, new)
     return html
