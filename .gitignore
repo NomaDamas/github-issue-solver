@@ -23,6 +23,12 @@ logs/
 .omx/
 .codex/
 .claude/
+.gjc/
+
+# Jikji generated knowledge-base artifacts (created by local `jikji prepare`)
+.jikji/
+.jikji_agent_map.md
+000_JIKJI_AGENT_MAP.md
 
 # OS / editor
 .DS_Store
