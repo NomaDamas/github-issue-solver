@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from app import agents
 from app import downloads
-from app import main
+from fastapi import Request
 from app import orchestrator
 
 from app import package_lake_service
@@ -282,6 +282,45 @@ class RegressionTests(unittest.TestCase):
                     self.assertEqual(manifest_get.status_code, 200)
                     self.assertEqual(Path(manifest_get.path), manifest)
 
+
+    def test_jikji_html_rewrite_is_root_relative_and_idempotent(self) -> None:
+        html = '<script>fetch("/api/status"); fetch("/api/find?q=Rust"); fetch("/jikji/api/status");</script><img src="/asset.js"><a href="https://example.test/x">x</a>'
+        rewritten = main._rewrite_jikji_html(html)
+        self.assertIn('fetch("/jikji/api/status")', rewritten)
+        self.assertIn('fetch("/jikji/api/find?q=Rust")', rewritten)
+        self.assertIn('fetch("/jikji/api/status"); fetch("/jikji/api/status")', rewritten)
+        self.assertIn('src="/jikji/asset.js"', rewritten)
+        self.assertEqual(rewritten, main._rewrite_jikji_html(rewritten))
+        self.assertIn('href="https://example.test/x"', rewritten)
+
+    def test_jikji_response_preserves_status_body_and_content_type(self) -> None:
+        response = main._jikji_response(403, {"content-type": "application/json", "x-upstream": "yes"}, b'{"error":"denied"}')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.body, b'{"error":"denied"}')
+        self.assertEqual(response.headers["content-type"], "application/json")
+        self.assertEqual(response.headers["x-upstream"], "yes")
+
+    def test_jikji_proxy_forwards_method_query_body_and_content_type(self) -> None:
+        captured = {}
+
+        def fake_fetch(path, method="GET", body=None, content_type=None):
+            captured.update(path=path, method=method, body=body, content_type=content_type)
+            return 200, {"content-type": "application/json"}, b"{}"
+
+        async def run_proxy():
+            scope = {
+                "type": "http", "method": "POST", "path": "/jikji/api/reindex",
+                "raw_path": b"/jikji/api/reindex", "query_string": b"path=%2Ftmp%2Froot&token=abc",
+                "headers": [(b"content-type", b"application/json")], "client": ("test", 1),
+                "server": ("test", 80), "scheme": "http", "http_version": "1.1",
+            }
+            request = Request(scope, receive=lambda: {"type": "http.request", "body": b'{"ok":true}', "more_body": False})
+            return await main.jikji_proxy("api/reindex", request)
+
+        with patch.object(main, "_fetch_jikji_upstream", side_effect=fake_fetch):
+            response = __import__("asyncio").run(run_proxy())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured, {"path": "api/reindex?path=%2Ftmp%2Froot&token=abc", "method": "POST", "body": b'{"ok":true}', "content_type": "application/json"})
 
 if __name__ == "__main__":
     unittest.main()

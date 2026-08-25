@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import re
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -285,20 +285,14 @@ JIKJI_UPSTREAM = "http://127.0.0.1:18768"
 
 
 def _rewrite_jikji_html(html: str) -> str:
-    replacements = (
-        ('href="/', 'href="/jikji/'),
-        ("href='/", "href='/jikji/"),
-        ('src="/', 'src="/jikji/'),
-        ("src='/", "src='/jikji/"),
-        ('fetch("/api/', 'fetch("/jikji/api/'),
-        ("fetch('/api/", "fetch('/jikji/api/"),
-        ('action="/', 'action="/jikji/'),
-        ("action='/", "action='/jikji/"),
-        ("const url = `${path}?${params(values)}`;", "const url = `/jikji${path}?${params(values)}`;"),
-        ("location.assign(`/download?", "location.assign(`/jikji/download?"),
-    )
-    for old, new in replacements:
-        html = html.replace(old, new)
+    """Scope root-relative browser URLs to the mounted /jikji prefix once."""
+    # Keep absolute URLs, protocol-relative URLs, and URLs already scoped to
+    # this mount untouched. The Rust UI uses both quoted attributes and fetch.
+    root_url = re.compile(r"([\"'`(=])/(?!/|jikji(?:/|[\"'`?#)]|$))")
+    html = root_url.sub(r"\1/jikji/", html)
+    # Template-built API paths are root-relative in the embedded SPA.
+    html = html.replace("const url = `${path}?${params(values)}`;", "const url = `/jikji${path}?${params(values)}`;")
+    html = html.replace("location.assign(`/download?", "location.assign(`/jikji/download?")
     return html
 
 
@@ -315,6 +309,22 @@ def _fetch_jikji_upstream(path: str = "", method: str = "GET", body: bytes | Non
         return exc.code, {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}, exc.read()
     except URLError as exc:
         raise HTTPException(502, f"Jikji upstream unavailable: {exc.reason}") from exc
+
+
+def _jikji_response(status: int, headers: dict[str, str], payload: bytes) -> Response:
+    """Return upstream status/body and content type without FastAPI coercion."""
+    response_headers = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+    }
+    content_type = headers.get("content-type", "application/octet-stream")
+    if "text/html" in content_type.lower():
+        response_headers.setdefault("cache-control", "no-store, must-revalidate")
+        payload = _rewrite_jikji_html(payload.decode("utf-8", "replace")).encode("utf-8")
+    return Response(content=payload, status_code=status, headers=response_headers, media_type=None)
+
+
 POLICY_AGENT_UPSTREAM = "http://127.0.0.1:3123"
 
 
@@ -388,61 +398,23 @@ class _NoRedirect(HTTPRedirectHandler):
 
 _NO_REDIRECT_OPENER = build_opener(_NoRedirect)
 
-JIKJI_UPSTREAM = "http://127.0.0.1:18768"
-
-
-def _rewrite_jikji_html(html: str) -> str:
-    for old, new in (
-        ('href="/', 'href="/jikji/'),
-        ("href='/", "href='/jikji/"),
-        ('src="/', 'src="/jikji/'),
-        ("src='/", "src='/jikji/"),
-        ('fetch("/api/', 'fetch("/jikji/api/'),
-        ("fetch('/api/", "fetch('/jikji/api/"),
-        ('action="/', 'action="/jikji/'),
-        ("action='/", "action='/jikji/"),
-        ("const url = `${path}?${params(values)}`;", "const url = `/jikji${path}?${params(values)}`;"),
-        ("location.assign(`/download?", "location.assign(`/jikji/download?"),
-    ):
-        html = html.replace(old, new)
-    return html
-
-
-def _fetch_jikji_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict[str, str], bytes]:
-    url = f"{JIKJI_UPSTREAM}/{path.lstrip('/')}" if path else JIKJI_UPSTREAM
-    headers = {"User-Agent": "Markr-Console/jikji-proxy"}
-    if content_type:
-        headers["Content-Type"] = content_type
-    req = URLRequest(url, data=body, method=method, headers=headers)
-    try:
-        with urlopen(req, timeout=30) as response:
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
-    except HTTPError as exc:
-        return exc.code, {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}, exc.read()
-    except URLError as exc:
-        raise HTTPException(502, f"Jikji upstream unavailable: {exc.reason}") from exc
-
-
 @app.get("/jikji")
-def jikji() -> HTMLResponse:
+def jikji() -> Response:
     status, headers, body = _fetch_jikji_upstream()
-    ctype = headers.get("content-type", "")
-    if status >= 400 or "html" not in ctype.lower():
-        raise HTTPException(status if status >= 400 else 502, "Jikji upstream did not return HTML")
-    return HTMLResponse(_rewrite_jikji_html(body.decode("utf-8", "replace")), status_code=status, headers={"Cache-Control": "no-store, must-revalidate"})
+    return _jikji_response(status, headers, body)
 
 
 @app.api_route("/jikji/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def jikji_proxy(path: str, request: Request) -> Response:
     body = await request.body()
     upstream_path = f"{path}?{request.url.query}" if request.url.query else path
-    status, headers, payload = _fetch_jikji_upstream(upstream_path, method=request.method.upper(), body=body or None, content_type=request.headers.get("content-type"))
-    ctype = headers.get("content-type", "application/octet-stream")
-    if status >= 400:
-        raise HTTPException(status, (payload.decode("utf-8", "replace") if payload else "Jikji upstream error")[:200])
-    if "text/html" in ctype.lower():
-        return HTMLResponse(_rewrite_jikji_html(payload.decode("utf-8", "replace")), status_code=status, headers={"Cache-Control": "no-store, must-revalidate"})
-    return Response(content=payload, status_code=status, media_type=ctype)
+    status, headers, payload = _fetch_jikji_upstream(
+        upstream_path,
+        method=request.method.upper(),
+        body=body or None,
+        content_type=request.headers.get("content-type"),
+    )
+    return _jikji_response(status, headers, payload)
 
 
 def _fetch_bid_monitor_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None, cookie: str | None = None, authorization: str | None = None) -> tuple[int, dict[str, str], bytes]:
@@ -456,12 +428,13 @@ def _fetch_bid_monitor_upstream(path: str = "", method: str = "GET", body: bytes
         headers["Authorization"] = authorization
     req = URLRequest(url, data=body, method=method, headers=headers)
     try:
-        with _NO_REDIRECT_OPENER.open(req, timeout=30) as resp:
-            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read()
+        with _NO_REDIRECT_OPENER.open(req, timeout=30) as response:
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
     except HTTPError as exc:
         return exc.code, {k.lower(): v for k, v in (exc.headers.items() if exc.headers else [])}, exc.read()
     except URLError as exc:
         raise HTTPException(502, f"bid monitor upstream unavailable: {exc.reason}") from exc
+
 
 
 def _fetch_monitor_upstream(path: str = "", method: str = "GET", body: bytes | None = None, content_type: str | None = None) -> tuple[int, dict[str, str], bytes]:
