@@ -31,4 +31,4 @@ curl http://100.90.206.112:8787/jikji/api/status
 curl http://100.90.206.112:8787/jikji/api/roots
 ```
 
-Jikji GUI 프로세스는 `/home/cheol/.local/bin/jikji gui /tmp --host 127.0.0.1 --port 18768 --no-open`으로 유지한다.
+Jikji GUI 프로세스는 `/home/cheol/.local/bin/jikji gui /home/cheol/projects/jikji --host 127.0.0.1 --port 18768 --no-open --prepare`로 유지한다.
